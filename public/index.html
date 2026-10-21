@@ -31,29 +31,34 @@ p.sub{color:var(--mute);margin:0 0 22px}
 select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
 button{font:inherit;font-weight:800;border:0;border-radius:12px;padding:14px 18px;width:100%;background:var(--acc);color:var(--acc-ink);cursor:pointer}
 button:disabled{opacity:.45;cursor:not-allowed}
+button.sec{background:transparent;color:var(--acc);border:2px solid var(--acc);margin-top:10px}
 button:focus-visible,select:focus-visible{outline:3px solid var(--hi);outline-offset:2px}
-#file{margin:14px 0 0;color:var(--mute);font-size:.95rem;word-break:break-all}
-progress{width:100%;height:10px;accent-color:var(--acc);margin-top:14px}
-#msg{margin-top:14px;min-height:1.6em}
-#msg.err{color:#c0392b}
-#out{margin-top:16px}
-#out audio{width:100%;margin-bottom:12px}
-#out a{display:block;text-align:center;text-decoration:none;font-weight:800;border:2px solid var(--acc);color:var(--acc);border-radius:12px;padding:12px}
+#list{list-style:none;padding:0;margin:16px 0 0}
+#list li,#merged li{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px}
+#merged{list-style:none;padding:0;margin:14px 0 0}
+.nm{font-weight:500;word-break:break-all}
+.st{color:var(--mute);font-size:.9rem}
+.st.err{color:#c0392b}
+.st.ok{color:var(--acc)}
+li progress{width:100%;height:6px;accent-color:var(--acc);margin-top:6px}
+li a{display:inline-block;margin-top:6px;font-weight:800;color:var(--acc)}
+li audio{width:100%;margin-top:8px}
 footer{margin-top:28px;color:var(--mute);font-size:.88rem}
 </style>
 </head>
 <body>
 <main>
 <h1>حوّل الفيديو إلى MP3</h1>
-<p class="sub">ارفع الفيديو وسيصلك ملف MP3 جاهز للتنزيل.</p>
+<p class="sub">ارفع فيديو واحدًا أو عدة فيديوهات، وادمجها في ملف صوتي واحد.</p>
 
 <label id="drop">
   <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-  <b>اختر فيديو أو اسحبه هنا</b>
-  <span>MP4 ،MOV ،MKV ،AVI ،WebM حتى 200 ميجابايت</span>
-  <input id="inp" type="file" accept="video/*,audio/*">
+  <b>اختر الفيديوهات أو اسحبها هنا</b>
+  <span>MP4 ،MOV ،MKV ،AVI ،WebM حتى 200 ميجابايت للملف الواحد</span>
+  <input id="inp" type="file" accept="video/*,audio/*" multiple>
 </label>
-<div id="file"></div>
+
+<ul id="list"></ul>
 
 <div class="row">
   <label for="kbps">الجودة</label>
@@ -64,69 +69,116 @@ footer{margin-top:28px;color:var(--mute);font-size:.88rem}
   </select>
 </div>
 
-<button id="go" disabled>حوّل إلى MP3</button>
-<progress id="pr" max="100" hidden></progress>
-<div id="msg" role="status" aria-live="polite"></div>
-<div id="out"></div>
-<footer>يُرفع الملف إلى الخادم للتحويل ثم يُحذف فور انتهاء التحويل، ولا نحتفظ بأي نسخة منه.</footer>
+<button id="go" disabled>حوّل الكل إلى MP3</button>
+<button id="mg" class="sec" hidden>ادمج الملفات الجاهزة في ملف واحد</button>
+<button id="dl" class="sec" hidden>نزّل كل الملفات الجاهزة</button>
+<ul id="merged"></ul>
+<footer>تُحوَّل الملفات واحدًا بعد الآخر. يُرفع كل ملف إلى الخادم ثم يُحذف فور انتهاء تحويله. يتبع الدمج ترتيب الملفات في القائمة.</footer>
 </main>
 
 <script>
-var MAX_MB=200,drop=document.getElementById('drop'),inp=document.getElementById('inp'),go=document.getElementById('go'),
-pr=document.getElementById('pr'),msg=document.getElementById('msg'),out=document.getElementById('out'),
-fileEl=document.getElementById('file'),kbps=document.getElementById('kbps'),file=null,url=null;
+var MAX_MB=200,drop=document.getElementById('drop'),inp=document.getElementById('inp'),
+go=document.getElementById('go'),dl=document.getElementById('dl'),mg=document.getElementById('mg'),
+list=document.getElementById('list'),merged=document.getElementById('merged'),
+kbps=document.getElementById('kbps'),items=[],running=false,mergeUrl=null;
 
-function setFile(f){
-  if(!f)return;
-  out.innerHTML='';msg.className='';msg.textContent='';
-  if(f.size>MAX_MB*1048576){file=null;go.disabled=true;fileEl.textContent='';fail('الملف أكبر من '+MAX_MB+' ميجابايت.');return}
-  file=f;fileEl.textContent=f.name+' ('+(f.size/1048576).toFixed(1)+' ميجابايت)';go.disabled=false;
+function size(f){return (f.size/1048576).toFixed(1)+' ميجابايت'}
+function pending(){return items.filter(function(x){return !x.done&&!x.bad})}
+function doneItems(){return items.filter(function(x){return x.done})}
+function refresh(){
+  go.disabled=running||pending().length===0;
+  dl.hidden=doneItems().length===0;
+  mg.hidden=doneItems().length<2;
+  drop.classList.toggle('busy',running);
 }
-function fail(t){msg.textContent=t;msg.className='err';pr.hidden=true;drop.classList.remove('busy');go.disabled=!file}
 
-inp.addEventListener('change',function(){setFile(inp.files[0])});
+function addFiles(fl){
+  for(var i=0;i<fl.length;i++){
+    var f=fl[i];
+    var it={file:f,done:false,bad:false,name:f.name.replace(/\.[^.]+$/,'')+'.mp3'};
+    var li=document.createElement('li');
+    var nm=document.createElement('div');nm.className='nm';nm.textContent=f.name+' ('+size(f)+')';
+    var st=document.createElement('div');st.className='st';
+    var p=document.createElement('progress');p.max=100;p.value=0;p.hidden=true;
+    li.appendChild(nm);li.appendChild(st);li.appendChild(p);list.appendChild(li);
+    it.li=li;it.st=st;it.p=p;
+    if(f.size>MAX_MB*1048576){it.bad=true;st.textContent='أكبر من '+MAX_MB+' ميجابايت، تم تجاهله.';st.className='st err'}
+    else st.textContent='في الانتظار';
+    items.push(it);
+  }
+  refresh();
+}
+
+inp.addEventListener('change',function(){addFiles(inp.files);inp.value=''});
 ['dragenter','dragover'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('over')})});
 ['dragleave','drop'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.remove('over')})});
-drop.addEventListener('drop',function(ev){setFile(ev.dataTransfer.files[0])});
+drop.addEventListener('drop',function(ev){addFiles(ev.dataTransfer.files)});
 
-go.addEventListener('click',function(){
-  if(!file)return;
-  go.disabled=true;out.innerHTML='';msg.className='';
-  pr.hidden=false;pr.value=0;drop.classList.add('busy');
-  msg.textContent='جارٍ رفع الملف…';
+function convertOne(it){
+  return new Promise(function(resolve){
+    it.p.hidden=false;it.p.value=0;it.st.className='st';it.st.textContent='جارٍ الرفع…';
+    var fd=new FormData();fd.append('kbps',kbps.value);fd.append('file',it.file);
+    var x=new XMLHttpRequest();
+    x.open('POST','/convert');x.responseType='blob';
+    x.upload.onprogress=function(e){if(e.lengthComputable)it.p.value=Math.round(e.loaded/e.total*100)};
+    x.upload.onload=function(){it.p.removeAttribute('value');it.st.textContent='جارٍ التحويل…'};
+    function fail(m){it.p.hidden=true;it.st.className='st err';it.st.textContent=m}
+    x.onerror=function(){fail('انقطع الاتصال بالخادم.');resolve('stop')};
+    x.onload=function(){
+      if(x.status===200){
+        var url=URL.createObjectURL(x.response);
+        it.done=true;it.blob=x.response;it.p.hidden=true;
+        it.st.className='st ok';it.st.textContent='تم التحويل ('+(x.response.size/1048576).toFixed(1)+' ميجابايت)';
+        var a=document.createElement('a');a.href=url;a.download=it.name;a.textContent='نزّل '+it.name;
+        var au=document.createElement('audio');au.controls=true;au.src=url;
+        it.li.appendChild(a);it.li.appendChild(document.createElement('br'));it.li.appendChild(au);
+        it.a=a;resolve(true);
+      }else{
+        x.response.text().then(function(t){
+          var m='حدث خطأ.';
+          try{m=JSON.parse(t).error||m}catch(e){}
+          fail(m);
+          resolve(x.status===429||x.status===503?'stop':false);
+        });
+      }
+    };
+    x.send(fd);
+  });
+}
 
-  var fd=new FormData();fd.append('kbps',kbps.value);fd.append('file',file);
-  var xhr=new XMLHttpRequest();
-  xhr.open('POST','/convert');
-  xhr.responseType='blob';
+go.addEventListener('click',async function(){
+  running=true;refresh();
+  var q=pending();
+  for(var i=0;i<q.length;i++){
+    var r=await convertOne(q[i]);
+    if(r==='stop')break;
+  }
+  running=false;refresh();
+});
 
-  xhr.upload.onprogress=function(e){
-    if(e.lengthComputable)pr.value=Math.round(e.loaded/e.total*100);
-  };
-  xhr.upload.onload=function(){
-    pr.removeAttribute('value');
-    msg.textContent='تم الرفع. جارٍ التحويل، قد يستغرق دقائق للملفات الكبيرة…';
-  };
-  xhr.onerror=function(){fail('انقطع الاتصال بالخادم. حاول مرة أخرى.')};
-  xhr.onload=function(){
-    if(xhr.status===200){
-      if(url)URL.revokeObjectURL(url);
-      url=URL.createObjectURL(xhr.response);
-      var name=file.name.replace(/\.[^.]+$/,'')+'.mp3';
-      pr.hidden=true;drop.classList.remove('busy');
-      msg.textContent='تم التحويل. حجم الملف '+(xhr.response.size/1048576).toFixed(1)+' ميجابايت.';
-      out.innerHTML='<audio controls src="'+url+'"></audio>';
-      var a=document.createElement('a');a.href=url;a.download=name;a.textContent='نزّل '+name;
-      out.appendChild(a);go.disabled=false;
-    }else{
-      xhr.response.text().then(function(t){
-        var m='حدث خطأ. حاول مرة أخرى.';
-        try{m=JSON.parse(t).error||m}catch(e){}
-        fail(m);
-      });
-    }
-  };
-  xhr.send(fd);
+dl.addEventListener('click',async function(){
+  var d=doneItems();
+  for(var i=0;i<d.length;i++){
+    d[i].a.click();
+    await new Promise(function(r){setTimeout(r,700)});
+  }
+});
+
+mg.addEventListener('click',function(){
+  var d=doneItems();
+  if(d.length<2)return;
+  var blob=new Blob(d.map(function(x){return x.blob}),{type:'audio/mpeg'});
+  if(mergeUrl)URL.revokeObjectURL(mergeUrl);
+  mergeUrl=URL.createObjectURL(blob);
+  merged.innerHTML='';
+  var li=document.createElement('li');
+  var nm=document.createElement('div');nm.className='nm';
+  nm.textContent='الملف المدموج ('+d.length+' ملفات، '+(blob.size/1048576).toFixed(1)+' ميجابايت)';
+  var au=document.createElement('audio');au.controls=true;au.src=mergeUrl;
+  var a=document.createElement('a');a.href=mergeUrl;a.download='merged.mp3';a.textContent='نزّل merged.mp3';
+  li.appendChild(nm);li.appendChild(au);li.appendChild(document.createElement('br'));li.appendChild(a);
+  merged.appendChild(li);
+  li.scrollIntoView({behavior:'smooth',block:'nearest'});
 });
 </script>
 </body>
