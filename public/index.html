@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>حوّل الفيديو إلى MP3</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;800&display=swap">
+<style>
+:root{--bg:#f1f3ee;--ink:#16231f;--mute:#5d6b66;--card:#fff;--line:#cfd7d1;--acc:#0f6b57;--acc-ink:#fff;--hi:#e9a620}
+@media (prefers-color-scheme:dark){:root{--bg:#101815;--ink:#e8efeb;--mute:#93a39c;--card:#18231f;--line:#2c3b35;--acc:#3fc3a2;--acc-ink:#07130f;--hi:#f0b93a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Tajawal",system-ui,sans-serif;line-height:1.7}
+main{max-width:560px;margin:0 auto;padding:28px 18px 40px}
+h1{font-size:2.2rem;font-weight:800;line-height:1.25;margin:8px 0 6px}
+p.sub{color:var(--mute);margin:0 0 22px}
+#drop{display:block;border:2px dashed var(--line);border-radius:18px;background:var(--card);padding:34px 16px;text-align:center;cursor:pointer;transition:border-color .2s}
+#drop.over,#drop:focus-within,#drop:hover{border-color:var(--acc)}
+#drop input{position:absolute;opacity:0;width:1px;height:1px}
+#drop b{display:block;font-size:1.15rem}
+#drop span{color:var(--mute);font-size:.92rem}
+.bars{display:flex;gap:4px;justify-content:center;align-items:center;height:44px;margin-bottom:10px}
+.bars i{width:5px;border-radius:3px;background:var(--acc);height:10px}
+.busy .bars i{animation:w .9s ease-in-out infinite}
+@keyframes w{50%{height:40px}}
+.bars i:nth-child(1){height:14px}.bars i:nth-child(2){height:26px;animation-delay:.1s}
+.bars i:nth-child(3){height:38px;animation-delay:.2s}.bars i:nth-child(4){height:22px;animation-delay:.3s}
+.bars i:nth-child(5){height:32px;animation-delay:.4s}.bars i:nth-child(6){height:16px;animation-delay:.5s}
+.bars i:nth-child(7){height:28px;animation-delay:.6s}
+@media (prefers-reduced-motion:reduce){.busy .bars i{animation:none}}
+.row{display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap}
+select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+button{font:inherit;font-weight:800;border:0;border-radius:12px;padding:14px 18px;width:100%;background:var(--acc);color:var(--acc-ink);cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,select:focus-visible{outline:3px solid var(--hi);outline-offset:2px}
+#file{margin:14px 0 0;color:var(--mute);font-size:.95rem;word-break:break-all}
+progress{width:100%;height:10px;accent-color:var(--acc);margin-top:14px}
+#msg{margin-top:14px;min-height:1.6em}
+#msg.err{color:#c0392b}
+#out{margin-top:16px}
+#out audio{width:100%;margin-bottom:12px}
+#out a{display:block;text-align:center;text-decoration:none;font-weight:800;border:2px solid var(--acc);color:var(--acc);border-radius:12px;padding:12px}
+footer{margin-top:28px;color:var(--mute);font-size:.88rem}
+</style>
+</head>
+<body>
+<main>
+<h1>حوّل الفيديو إلى MP3</h1>
+<p class="sub">ارفع الفيديو وسيصلك ملف MP3 جاهز للتنزيل.</p>
+
+<label id="drop">
+  <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <b>اختر فيديو أو اسحبه هنا</b>
+  <span>MP4 ،MOV ،MKV ،AVI ،WebM حتى 200 ميجابايت</span>
+  <input id="inp" type="file" accept="video/*,audio/*">
+</label>
+<div id="file"></div>
+
+<div class="row">
+  <label for="kbps">الجودة</label>
+  <select id="kbps">
+    <option value="128">128 كيلوبت (حجم أصغر)</option>
+    <option value="192" selected>192 كيلوبت (متوازنة)</option>
+    <option value="320">320 كيلوبت (أعلى جودة)</option>
+  </select>
+</div>
+
+<button id="go" disabled>حوّل إلى MP3</button>
+<progress id="pr" max="100" hidden></progress>
+<div id="msg" role="status" aria-live="polite"></div>
+<div id="out"></div>
+<footer>يُرفع الملف إلى الخادم للتحويل ثم يُحذف فور انتهاء التحويل، ولا نحتفظ بأي نسخة منه.</footer>
+</main>
+
+<script>
+var MAX_MB=200,drop=document.getElementById('drop'),inp=document.getElementById('inp'),go=document.getElementById('go'),
+pr=document.getElementById('pr'),msg=document.getElementById('msg'),out=document.getElementById('out'),
+fileEl=document.getElementById('file'),kbps=document.getElementById('kbps'),file=null,url=null;
+
+function setFile(f){
+  if(!f)return;
+  out.innerHTML='';msg.className='';msg.textContent='';
+  if(f.size>MAX_MB*1048576){file=null;go.disabled=true;fileEl.textContent='';fail('الملف أكبر من '+MAX_MB+' ميجابايت.');return}
+  file=f;fileEl.textContent=f.name+' ('+(f.size/1048576).toFixed(1)+' ميجابايت)';go.disabled=false;
+}
+function fail(t){msg.textContent=t;msg.className='err';pr.hidden=true;drop.classList.remove('busy');go.disabled=!file}
+
+inp.addEventListener('change',function(){setFile(inp.files[0])});
+['dragenter','dragover'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('over')})});
+['dragleave','drop'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.remove('over')})});
+drop.addEventListener('drop',function(ev){setFile(ev.dataTransfer.files[0])});
+
+go.addEventListener('click',function(){
+  if(!file)return;
+  go.disabled=true;out.innerHTML='';msg.className='';
+  pr.hidden=false;pr.value=0;drop.classList.add('busy');
+  msg.textContent='جارٍ رفع الملف…';
+
+  var fd=new FormData();fd.append('kbps',kbps.value);fd.append('file',file);
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST','/convert');
+  xhr.responseType='blob';
+
+  xhr.upload.onprogress=function(e){
+    if(e.lengthComputable)pr.value=Math.round(e.loaded/e.total*100);
+  };
+  xhr.upload.onload=function(){
+    pr.removeAttribute('value');
+    msg.textContent='تم الرفع. جارٍ التحويل، قد يستغرق دقائق للملفات الكبيرة…';
+  };
+  xhr.onerror=function(){fail('انقطع الاتصال بالخادم. حاول مرة أخرى.')};
+  xhr.onload=function(){
+    if(xhr.status===200){
+      if(url)URL.revokeObjectURL(url);
+      url=URL.createObjectURL(xhr.response);
+      var name=file.name.replace(/\.[^.]+$/,'')+'.mp3';
+      pr.hidden=true;drop.classList.remove('busy');
+      msg.textContent='تم التحويل. حجم الملف '+(xhr.response.size/1048576).toFixed(1)+' ميجابايت.';
+      out.innerHTML='<audio controls src="'+url+'"></audio>';
+      var a=document.createElement('a');a.href=url;a.download=name;a.textContent='نزّل '+name;
+      out.appendChild(a);go.disabled=false;
+    }else{
+      xhr.response.text().then(function(t){
+        var m='حدث خطأ. حاول مرة أخرى.';
+        try{m=JSON.parse(t).error||m}catch(e){}
+        fail(m);
+      });
+    }
+  };
+  xhr.send(fd);
+});
+</script>
+</body>
+</html>
