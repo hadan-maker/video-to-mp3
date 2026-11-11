@@ -49,13 +49,13 @@ footer{margin-top:28px;color:var(--mute);font-size:.88rem}
 <body>
 <main>
 <h1>حوّل الفيديو إلى MP3</h1>
-<p class="sub">ارفع فيديو واحدًا أو عدة فيديوهات، وادمجها في ملف صوتي واحد.</p>
+<p class="sub">ارفع فيديو أو عرض PowerPoint (PPTX)، أو عدة ملفات، وادمجها في ملف صوتي واحد.</p>
 
 <label id="drop">
   <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-  <b>اختر الفيديوهات أو اسحبها هنا</b>
-  <span>MP4 ،MOV ،MKV ،AVI ،WebM حتى 200 ميجابايت للملف الواحد</span>
-  <input id="inp" type="file" accept="video/*,audio/*" multiple>
+  <b>اختر الملفات أو اسحبها هنا</b>
+  <span>MP4 ،MOV ،MKV ،AVI ،WebM ،PPTX حتى 200 ميجابايت للملف الواحد</span>
+  <input id="inp" type="file" accept="video/*,audio/*,.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" multiple>
 </label>
 
 <ul id="list"></ul>
@@ -73,7 +73,7 @@ footer{margin-top:28px;color:var(--mute);font-size:.88rem}
 <button id="mg" class="sec" hidden>ادمج الملفات الجاهزة في ملف واحد</button>
 <button id="dl" class="sec" hidden>نزّل كل الملفات الجاهزة</button>
 <ul id="merged"></ul>
-<footer>تُحوَّل الملفات واحدًا بعد الآخر. يُرفع كل ملف إلى الخادم ثم يُحذف فور انتهاء تحويله. يتبع الدمج ترتيب الملفات في القائمة.</footer>
+<footer>تُحوَّل الملفات واحدًا بعد الآخر. يُرفع كل ملف إلى الخادم ثم يُحذف فور انتهاء تحويله. في عروض PowerPoint يُستخرج الصوت من الشرائح بترتيبها. يتبع الدمج ترتيب الملفات في القائمة.</footer>
 </main>
 
 <script>
