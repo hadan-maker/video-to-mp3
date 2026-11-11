@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
+const AdmZip = require('adm-zip');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -11,8 +12,81 @@ const MAX_MB = parseInt(process.env.MAX_MB || '200', 10);
 const MAX_JOBS = parseInt(process.env.MAX_JOBS || '2', 10);
 const BITRATES = ['128', '192', '320'];
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v2mp3-'));
+const AUDIO_EXT = ['.m4a', '.mp3', '.wav', '.wma', '.aac', '.ogg'];
+const MAX_PPTX_AUDIO_BYTES = 500 * 1024 * 1024;
 let active = 0;
 
+// ---------- PowerPoint: استخراج الصوت بترتيب الشرائح ----------
+function attr(tag, name) {
+  const m = tag.match(new RegExp('\\s' + name + '="([^"]*)"'));
+  return m ? m[1] : null;
+}
+
+function parseRels(xml) {
+  return (xml.match(/<Relationship\b[^>]*>/g) || []).map((t) => ({
+    id: attr(t, 'Id'),
+    target: attr(t, 'Target'),
+  }));
+}
+
+function pptxAudio(zipPath) {
+  const zip = new AdmZip(zipPath);
+  const text = (name) => {
+    const e = zip.getEntry(name);
+    return e ? e.getData().toString('utf8') : null;
+  };
+
+  let slides = [];
+  const pres = text('ppt/presentation.xml');
+  const presRels = text('ppt/_rels/presentation.xml.rels');
+  if (pres && presRels) {
+    const map = {};
+    parseRels(presRels).forEach((r) => { map[r.id] = r.target; });
+    (pres.match(/<p:sldId\b[^>]*>/g) || []).forEach((t) => {
+      const target = map[attr(t, 'r:id')];
+      if (!target) return;
+      slides.push(target.startsWith('/') ? target.slice(1) : path.posix.normalize('ppt/' + target));
+    });
+  }
+  if (!slides.length) {
+    slides = zip.getEntries()
+      .map((e) => e.entryName)
+      .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+      .sort((a, b) => parseInt(a.match(/(\d+)\.xml$/)[1], 10) - parseInt(b.match(/(\d+)\.xml$/)[1], 10));
+  }
+
+  const tracks = [];
+  const seen = new Set();
+  let total = 0;
+  slides.forEach((slidePath) => {
+    const relsPath = path.posix.join(path.posix.dirname(slidePath), '_rels', path.posix.basename(slidePath) + '.rels');
+    const xml = text(relsPath);
+    if (!xml) return;
+    const rels = parseRels(xml).sort((a, b) => {
+      const na = parseInt((a.id || '').replace(/\D/g, ''), 10) || 0;
+      const nb = parseInt((b.id || '').replace(/\D/g, ''), 10) || 0;
+      return na - nb;
+    });
+    rels.forEach((r) => {
+      if (!r.target) return;
+      const ext = path.posix.extname(r.target).toLowerCase();
+      if (!AUDIO_EXT.includes(ext)) return;
+      const full = r.target.startsWith('/')
+        ? r.target.slice(1)
+        : path.posix.normalize(path.posix.join(path.posix.dirname(slidePath), r.target));
+      if (seen.has(full)) return;
+      const entry = zip.getEntry(full);
+      if (!entry) return;
+      total += entry.header.size;
+      if (total > MAX_PPTX_AUDIO_BYTES) throw new Error('too big');
+      seen.add(full);
+      tracks.push({ ext, data: entry.getData() });
+    });
+  });
+  return tracks;
+}
+
+// ---------- الخادم ----------
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.static(path.join(__dirname, 'public')));
@@ -54,17 +128,58 @@ app.post('/convert', (req, res) => {
 
     const input = req.file.path;
     const output = input + '.mp3';
+    const extras = [];
     const kbps = BITRATES.includes(req.body.kbps) ? req.body.kbps : '192';
     const clean = () => {
       fs.unlink(input, () => {});
       fs.unlink(output, () => {});
+      extras.forEach((p) => fs.unlink(p, () => {}));
       release();
     };
 
-    const ff = spawn('ffmpeg', [
-      '-y', '-i', input, '-vn', '-map', 'a:0',
-      '-codec:a', 'libmp3lame', '-b:a', kbps + 'k', output
-    ], { stdio: ['ignore', 'ignore', 'ignore'] });
+    let args;
+    if (/\.pptx$/i.test(req.file.originalname || '')) {
+      let tracks;
+      try {
+        tracks = pptxAudio(input);
+      } catch (e) {
+        clean();
+        return res.status(422).json({ error: 'تعذّرت قراءة ملف PowerPoint.' });
+      }
+      if (!tracks.length) {
+        clean();
+        return res.status(422).json({ error: 'لا يحتوي هذا العرض على ملفات صوتية.' });
+      }
+      try {
+        tracks.forEach((t, i) => {
+          const p = input + '.t' + i + t.ext;
+          fs.writeFileSync(p, t.data);
+          extras.push(p);
+        });
+      } catch (e) {
+        clean();
+        return res.status(500).json({ error: 'خطأ في الخادم.' });
+      }
+      args = ['-y'];
+      extras.forEach((p) => { args.push('-i', p); });
+      const filters = extras.map((p, i) =>
+        '[' + i + ':a:0]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a' + i + ']'
+      );
+      const labels = extras.map((p, i) => '[a' + i + ']').join('');
+      args.push(
+        '-filter_complex',
+        filters.join(';') + ';' + labels + 'concat=n=' + extras.length + ':v=0:a=1[out]',
+        '-map', '[out]',
+        '-codec:a', 'libmp3lame', '-b:a', kbps + 'k', output
+      );
+    } else {
+      args = [
+        '-y', '-i', input, '-vn', '-map', 'a:0',
+        '-codec:a', 'libmp3lame', '-b:a', kbps + 'k', output
+      ];
+    }
+
+    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'ignore'] });
 
     const timer = setTimeout(() => ff.kill('SIGKILL'), 10 * 60 * 1000);
     res.on('close', () => { if (!res.writableEnded) ff.kill('SIGKILL'); });
@@ -79,7 +194,7 @@ app.post('/convert', (req, res) => {
       clearTimeout(timer);
       if (code !== 0) {
         clean();
-        return res.status(422).json({ error: 'تعذّر استخراج الصوت. تأكد أن الملف فيديو سليم وفيه صوت.' });
+        return res.status(422).json({ error: 'تعذّر استخراج الصوت. تأكد أن الملف سليم وفيه صوت.' });
       }
       let base = 'audio';
       try {
